@@ -1,64 +1,55 @@
-from detectors.detection_smile import DetectSmile
-from detectors.detection_eyes import DetectEyes
-from detectors.detection_face import DetectFace
-from typing import Dict, List
-from utils.base64 import base64_to_nparray
+   
+import yfinance as yf
 from fastapi import FastAPI
-
-from pydantic import BaseModel
-
+from fastapi.encoders import jsonable_encoder
+from sqlmodel import create_engine, Session, SQLModel,Field
 from utils.decorators import timing
+
+
+   
+from typing import List,Optional
+
+@timing
+def postprocess(data, tickers: List[str]) -> dict:
+    """Post process results because of the way it has been organized."""
+
+    data.dropna(axis=1, inplace=True)
+    result = dict({ticker: dict() for ticker in tickers})
+
+    try:
+        for key, value in data.to_dict().items():
+            if isinstance(key, tuple):
+                (action, ticker) = key
+                result[ticker][action] = value
+            else:
+                result[tickers[0]][key] = value
+    except ValueError as e:
+        raise e
+
+    return result
+
+class RequestDataInfo(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tickers: str
+    start: str
+    end: str
 
 app = FastAPI()
 
-class Request_body(BaseModel):
-    img : str
-
+engine = create_engine("sqlite:///database.db")
+SQLModel.metadata.create_all(engine)
 
 @timing
-@app.post(path="/detect_face")
-def detect(body:Request_body) -> Dict[str, List[List[int]]]:
+@app.get("/get_prices")
+def get_prices(tickers: str, init_date: str, init_end: str):
+    yahoo_info = yf.download(" ".join(tickers.split(" ")), start=init_date, end=init_end)
 
-    detect_face = DetectFace()
+    pos_data = postprocess(yahoo_info, tickers.split(" "))
 
-    #carregamento da imagem
-    img = body.img
-    img = base64_to_nparray(img)
+    data = RequestDataInfo(tickers=tickers, start=init_date, end=init_date)
 
-    #pre processamento
-    gray_image = detect_face.bgr_to_gray(img)
+    with Session(engine) as session:
+        session.add(data)
+        session.commit()
 
-    response =detect_face.detect(gray_image)
-
-    return {"faces": response}
-
-@app.post(path="/detect_smile")
-def detect(body:Request_body) -> Dict[str, List[List[int]]]:
-
-    detect_smile = DetectSmile()
-
-    #carregamento da imagem
-    img = base64_to_nparray(body.img)
-
-    #pre processamento
-    gray_image = detect_smile.bgr_to_gray(img)
-
-    response =detect_smile.detect(gray_image)
-
-    return {"faces": response}
-
-
-@app.post(path="/detect_eyes")
-def detect(body:Request_body) -> Dict[str, List[List[int]]]:
-
-    detect_eyes = DetectEyes()
-
-    #carregamento da imagem
-    img = base64_to_nparray(body.img)
-
-    #pre processamento
-    gray_image = detect_eyes.bgr_to_gray(img)
-
-    response =detect_eyes.detect(gray_image)
-
-    return {"eyes": response}
+    return jsonable_encoder(pos_data)
